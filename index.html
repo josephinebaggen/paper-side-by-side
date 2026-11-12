@@ -239,41 +239,79 @@ function loadNotes(){
   updateCount();
 }
 
-/* ---------- Fade: everything except section headers ---------- */
-const FADE_OPACITY = .8;   // strength of "Fade paper" on the annotated copy (screen and export); headers stay sharp
+/* ---------- Fade: body text strongly, figures as before, captions/tables lightly, section headers not ---------- */
+const FADE_OPACITY = .8;   // body text on the annotated copy (screen and export)
+const FIG_OPACITY  = .6;   // figures (the old fade level)
+const SOFT_OPACITY = .35;  // figure/table captions and table bodies; section headers stay unfaded
 document.documentElement.style.setProperty('--fade', FADE_OPACITY);
-const HEADER_RE = /^(\d{1,2}(\.\d{1,2})*\.\s+[A-Za-z].{0,110}|[A-Z]\.\s+[A-Z][A-Z0-9 ,:'()\-]{3,}|[A-Z]\.\d{1,2}\.\s+[A-Za-z].{0,110}|[A-Z][A-Z \-]{7,}|ABSTRACT|REFERENCES|ACKNOWLEDG(E)?MENTS?)$/;   // numbered / appendix headings, all-caps lines (wrapped headings)
-async function headerBoxes(pg, vp){
-  // returns [{x, y, w, h}] in page fractions (top-left origin) for section-header lines and the (large-font) title
-  let tc; try { tc = await pg.getTextContent(); } catch { return []; }
-  const items = tc.items.filter(it => it.str && it.str.trim()).map(it => {
+const HEADER_RE = /^(\d{1,2}(\.\d{1,2})*\.\s+[A-Za-z].{0,110}|[A-Z]\.\s+[A-Z][A-Z0-9 ,:'()\-]{3,}|[A-Z]\.\d{1,2}\.\s+[A-Za-z].{0,110}|[A-Z][A-Z \-]{7,}|ABSTRACT|REFERENCES|ACKNOWLEDG(E)?MENTS?)$/;
+const CAP_RE = /^(Figure|Fig\.|Table)\s*\d+[.:]/;
+async function fadeZones(pg, vp){
+  // returns {hdr, soft, fig}: boxes {x, y, w, h} in page fractions (top-left origin)
+  const Z = {hdr:[], soft:[], fig:[]};
+  let tc; try { tc = await pg.getTextContent(); } catch { return Z; }
+  const items = tc.items.filter(it => it.str && it.str.trim() && Math.abs(it.transform[1]) < .01 * Math.abs(it.transform[0] || 1)).map(it => {   // skip rotated text (e.g. the arXiv margin stamp)
     const [, , , , e, f] = it.transform; const h = Math.hypot(it.transform[2], it.transform[3]) || it.height || 8;
     return {x:e, y:f, w:it.width, h, s:it.str};
   });
-  if (!items.length) return [];
-  const lines = [];
-  for (const it of items.sort((a, b) => b.y - a.y || a.x - b.x)) {
-    const L = lines.find(l => Math.abs(l.y - it.y) < .45 * it.h && it.x >= l.x0 - 4 && it.x - l.x1 < 3 * it.h);   // same baseline and adjacent (keeps the two columns apart)
-    if (L) { L.items.push(it); L.x0 = Math.min(L.x0, it.x); L.x1 = Math.max(L.x1, it.x + it.w); L.h = Math.max(L.h, it.h); }
-    else lines.push({y:it.y, x0:it.x, x1:it.x + it.w, h:it.h, items:[it]});
+  if (!items.length) return Z;
+  const rows = [];   // 1) group by baseline (sub/superscripts join their line), 2) split each row at column gaps
+  for (const it of items.sort((a, b) => b.y - a.y))  {
+    const R = rows.find(r => Math.abs(r.y - it.y) < .45 * Math.max(r.h, it.h));
+    if (R) { R.items.push(it); R.h = Math.max(R.h, it.h); } else rows.push({y:it.y, h:it.h, items:[it]});
   }
-  const hs = items.map(i => i.h).sort((a, b) => a - b), hMed = hs[hs.length >> 1];
-  const out = [];
-  for (const l of lines) {
-    const txt = l.items.sort((a, b) => a.x - b.x).map(i => i.s).join(' ').replace(/\s+/g, ' ').trim();
-    if (!(HEADER_RE.test(txt) || (l.h > 1.3 * hMed && txt.length > 3))) continue;
+  const raw = [];
+  for (const r of rows) {
+    let cur = null;
+    for (const it of r.items.sort((a, b) => a.x - b.x)) {
+      if (cur && it.x - cur.x1 < 1.5 * r.h) { cur.items.push(it); cur.x1 = Math.max(cur.x1, it.x + it.w); cur.h = Math.max(cur.h, it.h); }
+      else { cur = {y:r.y, x0:it.x, x1:it.x + it.w, h:it.h, items:[it]}; raw.push(cur); }
+    }
+  }
+  const W = vp.width, H = vp.height;
+  const lines = raw.map(l => {   // to viewport fractions, y down
     const [ax, ay] = vp.convertToViewportPoint(l.x0 - 2, l.y + 1.05 * l.h), [bx, by] = vp.convertToViewportPoint(l.x1 + 2, l.y - .35 * l.h);
-    out.push({x:Math.min(ax, bx) / vp.width, y:Math.min(ay, by) / vp.height, w:Math.abs(bx - ax) / vp.width, h:Math.abs(by - ay) / vp.height});
-  }
-  return out;
+    return {x0:Math.min(ax, bx) / W, x1:Math.max(ax, bx) / W, y0:Math.min(ay, by) / H, y1:Math.max(ay, by) / H,
+            h:l.h / H, hm:l.items.map(i => i.h).sort((a, b) => a - b)[l.items.length >> 1] / H,   // typical letter height (robust to super/subscripts)
+            t:l.items.sort((a, b) => a.x - b.x).map(i => i.s).join(' ').replace(/\s+/g, ' ').trim()};
+  }).sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+  const hs = lines.map(l => l.hm).sort((a, b) => a - b), hMed = hs[hs.length >> 1];
+  const ov = (a, b) => a.x0 < b.x1 && a.x1 > b.x0;
+  const box = ls => { const x0 = Math.min(...ls.map(l => l.x0)), x1 = Math.max(...ls.map(l => l.x1)), y0 = Math.min(...ls.map(l => l.y0)), y1 = Math.max(...ls.map(l => l.y1)); return {x:x0, y:y0, w:x1 - x0, h:y1 - y0}; };
+  const used = new Set();
+  lines.forEach((l, i) => {
+    if (!CAP_RE.test(l.t)) return;
+    const blk = [l]; let last = l;   // caption: following lines in the same column, small gaps
+    for (const m of lines.slice(i + 1)) {
+      if (m.y0 < last.y0 + .3 * hMed || !ov(m, l)) continue;
+      if (m.hm < .8 * l.hm || m.t.length < 4) { if (m.y0 - last.y1 < .8 * hMed) blk.push(m); continue; }   // stray sub/superscripts and symbols: keep, but don't stop
+      if (m.y0 - last.y1 > .8 * hMed || Math.abs(m.hm - l.hm) > .05 * l.hm) break;   // captions use a smaller font than the body text
+      blk.push(m); last = m;
+    }
+    blk.forEach(m => used.add(m));
+    const cap = box(blk); Z.soft.push(cap);
+    // region above the caption, up to the first full-length body-text line (or the top margin)
+    let top = .04; const above = lines.filter(m => m.y1 <= l.y0 + 1e-4 && ov(m, l)).sort((a, b) => b.y1 - a.y1);
+    if (/^Table/.test(l.t)) {   // table body: rows directly above the caption, until a real gap
+      let edge = l.y0; for (const m of above) { if (edge - m.y1 > 2.5 * hMed) break; edge = Math.min(edge, m.y0); } top = edge - .003;
+    } else for (const m of above) {   // figure: up to the first full-length body-text line (or the top margin)
+      if (m.x1 - m.x0 > .42 * cap.w && Math.abs(m.hm - hMed) < .15 * hMed && m.t.length > 40) { top = m.y1 + .003; break; }
+    }
+    if (cap.y - top > .02) (/^Table/.test(l.t) ? Z.soft : Z.fig).push({x:cap.x, y:top, w:cap.w, h:cap.y - top});
+  });
+  const inZone = l => [...Z.soft, ...Z.fig].some(b => l.x0 < b.x + b.w && l.x1 > b.x && l.y0 < b.y + b.h && l.y1 > b.y);
+  for (const l of lines) if (!used.has(l) && !inZone(l) && (HEADER_RE.test(l.t) || (l.hm > 1.15 * hMed && l.t.length > 3))) Z.hdr.push({x:l.x0, y:l.y0, w:l.x1 - l.x0, h:l.y1 - l.y0});
+  return Z;
 }
-function fadeSvg(boxes){
-  // white sheet with rectangular holes (even-odd) over the headers
-  const holes = boxes.map(b => `M${b.x} ${b.y}h${b.w}v${b.h}h${-b.w}Z`).join('');
-  return `<svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true"><path fill="#fff" fill-rule="evenodd" d="M0 0H1V1H0Z${holes}"/></svg>`;
+const zonePath = bs => bs.map(b => `M${b.x} ${b.y}h${b.w}v${b.h}h${-b.w}Z`).join('');
+function fadeSvg(Z){
+  // white sheet at the body-text level with holes; lighter sheets over figures and captions/tables (relative to the layer opacity)
+  const all = [...Z.hdr, ...Z.soft, ...Z.fig];
+  return `<svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true"><path fill="#fff" fill-rule="evenodd" d="M0 0H1V1H0Z${zonePath(all)}"/>`
+       + `<path fill="#fff" fill-opacity="${FIG_OPACITY / FADE_OPACITY}" d="${zonePath(Z.fig)}"/><path fill="#fff" fill-opacity="${SOFT_OPACITY / FADE_OPACITY}" d="${zonePath(Z.soft)}"/></svg>`;
 }
 function fadeRects(boxes){
-  // non-overlapping rectangles (page fractions, top-left origin) covering the page minus the header boxes, for the export
+  // non-overlapping rectangles (page fractions, top-left origin) covering the page minus the boxes, for the export
   const ys = [...new Set([0, 1, ...boxes.flatMap(b => [Math.max(0, b.y), Math.min(1, b.y + b.h)])])].sort((a, b) => a - b), out = [];
   for (let k = 0; k < ys.length - 1; k++) {
     const y0 = ys[k], y1 = ys[k + 1]; if (y1 - y0 < 1e-6) continue;
@@ -298,7 +336,7 @@ async function loadPdf(data, key, title, sub){
   document.title = (t || sub || 'PDF') + ' · Paper Side by Side';
   pagesL.innerHTML = pagesR.innerHTML = ''; S.pages = [];
   for (let i = 1; i <= S.pdf.numPages; i++) {
-    const pg = await S.pdf.getPage(i); const vp = pg.getViewport({scale:1}); const hdr = await headerBoxes(pg, vp);
+    const pg = await S.pdf.getPage(i); const vp = pg.getViewport({scale:1}); const hdr = await fadeZones(pg, vp);
     const mk = (host, withLayer) => {
       const w = document.createElement('div'); w.className = 'page'; w.dataset.page = i;
       const c = document.createElement('canvas'); w.appendChild(c);
@@ -541,7 +579,11 @@ async function exportPdf(){
       pg.drawText('ORIGINAL', {x:W * .04, y:H + top * .3, size:ls, font:lbl, color:rgb(.45, .5, .56)});
       pg.drawText('ANNOTATED', {x:W + gap + W * .04, y:H + top * .3, size:ls, font:lbl, color:rgb(.45, .5, .56)});
       const ox = W + gap, em = W * .0175;
-      if (S.fade) for (const r of fadeRects((S.pages[i] && S.pages[i].hdr) || [])) pg.drawRectangle({x:ox + r.x * W, y:H - (r.y + r.h) * H, width:r.w * W, height:r.h * H, color:rgb(1, 1, 1), opacity:FADE_OPACITY});
+      if (S.fade) {
+        const Z = (S.pages[i] && S.pages[i].hdr) || {hdr:[], soft:[], fig:[]};
+        const put = (rs, op) => { for (const r of rs) pg.drawRectangle({x:ox + r.x * W, y:H - (r.y + r.h) * H, width:r.w * W, height:r.h * H, color:rgb(1, 1, 1), opacity:op}); };
+        put(fadeRects([...Z.hdr, ...Z.soft, ...Z.fig]), FADE_OPACITY); put(Z.fig, FIG_OPACITY); put(Z.soft, SOFT_OPACITY);
+      }
       for (const a of notes.filter(a => a.page === i + 1 && a.kind === 'hl')) {
         const c = HL[a.color] || HL.yellow;
         pg.drawRectangle({x:ox + a.x * W, y:H - (a.y + a.h) * H, width:a.w * W, height:a.h * H, color:rgb(...c), opacity:.33});
