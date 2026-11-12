@@ -241,7 +241,7 @@ function loadNotes(){
 
 /* ---------- Fade: body text strongly, figures as before, captions/tables lightly, section headers not ---------- */
 const FADE_OPACITY = .8;   // body text on the annotated copy (screen and export)
-const FIG_OPACITY  = .45;  // figures
+const FIG_OPACITY  = 0;    // figures: not faded
 const SOFT_OPACITY = .2;   // figure/table captions and table bodies; section headers stay unfaded
 document.documentElement.style.setProperty('--fade', FADE_OPACITY);
 const HEADER_RE = /^(\d{1,2}(\.\d{1,2})*\.\s+[A-Za-z].{0,110}|[A-Z]\.\s+[A-Z][A-Z0-9 ,:'()\-]{3,}|[A-Z]\.\d{1,2}\.\s+[A-Za-z].{0,110}|[A-Z][A-Z \-]{7,}|ABSTRACT|REFERENCES|ACKNOWLEDG(E)?MENTS?)$/;
@@ -582,7 +582,7 @@ async function exportPdf(){
       if (S.fade) {
         const Z = (S.pages[i] && S.pages[i].hdr) || {hdr:[], soft:[], fig:[]};
         const put = (rs, op) => { for (const r of rs) pg.drawRectangle({x:ox + r.x * W, y:H - (r.y + r.h) * H, width:r.w * W, height:r.h * H, color:rgb(1, 1, 1), opacity:op}); };
-        put(fadeRects([...Z.hdr, ...Z.soft, ...Z.fig]), FADE_OPACITY); put(Z.fig, FIG_OPACITY); put(Z.soft, SOFT_OPACITY);
+        put(fadeRects([...Z.hdr, ...Z.soft, ...Z.fig]), FADE_OPACITY); if (FIG_OPACITY > 0) put(Z.fig, FIG_OPACITY); put(Z.soft, SOFT_OPACITY);
       }
       for (const a of notes.filter(a => a.page === i + 1 && a.kind === 'hl')) {
         const c = HL[a.color] || HL.yellow;
